@@ -1,6 +1,6 @@
 # 06 — Train + gate (scripts only)
 
-This folder **prepares** the train and the local gate. It does not download data, serve v125, or run LoRA. GPU steps: `07-gpu-dataset.md`.
+This folder **prepares** the train and the local gate. `train.py` does not run LoRA. The trainer is `run_train.py`. GPU steps and the 2026-09-12 box log: `07-gpu-dataset.md`.
 
 ---
 
@@ -28,7 +28,9 @@ Defines the meters. After a real train, someone would roll held-out prefixes × 
 | cold edit rate | **flat** (if it drops, revert) |
 | loop rate | ~0 |
 
-`--run` is refused here too. You can point `--rollouts` at a jsonl later to compute meters from files.
+`--run` is refused here too. Point `--rollouts` at a jsonl you already rolled.
+
+First held-out pass (40 prefixes × 2): v125 `cold_verify_rate` 0.650 / `cold_edit_rate` 0.388; challenger 0.675 / 0.400; `loop_rate` 0. No `pre_edit` tickets in that 40. Serve vLLM after train — rolling against a dead port writes empty files and a null `gate.json`.
 
 ---
 

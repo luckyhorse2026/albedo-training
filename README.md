@@ -8,9 +8,21 @@ Train from that, not v124.
 On a 4×H200 box, start here: **[`07-gpu-dataset.md`](07-gpu-dataset.md)**.
 Model steps should keep all 4 GPUs busy (4 vLLM servers for roll/gate, `torchrun` for train).
 
-This folder prepares the pipeline. `data/` and `out/` are gitignored. `--run` on `train.py` / `gate.py` is refused.
+This folder prepares the pipeline. `data/` and `out/` are gitignored. `--run` on `train.py` / `gate.py` is refused. Real train is `run_train.py`.
 
 The backend lives in `../albedo`.
+
+## First run (2026-09-12)
+
+Cut 327 prefixes (287 train / 40 held-out) → 1722 v125 rolls → 383 SFT / 259 DPO. SFT+DPO LoRA on v125, merged to `out/train/challenger`. Held-out gate (80 rolls each):
+
+| meter | v125 | challenger |
+|---|---|---|
+| cold_verify_rate | 0.650 | 0.675 |
+| cold_edit_rate | 0.388 | 0.400 |
+| loop_rate | 0 | 0 |
+
+DPO at 8k OOM’d; use `--max-seq-len 4096` and the shared ref-logps cache in `run_train.py`. Serve vLLM again after train before you roll — otherwise `gate.json` is all nulls. HF pack is `out/train/challenger-hf` (king metadata + trained shards); this box has no `HF_TOKEN` yet.
 
 ## How we work
 
@@ -29,7 +41,9 @@ The backend lives in `../albedo`.
 ## Pipeline (GPU box)
 
 ```
-cut → roll v125 ×6 → keep/drop → sft.jsonl + dpo.jsonl → SFT → DPO → gate meters
+cut → roll v125 ×6 → keep/drop → sft.jsonl + dpo.jsonl
+    → run_train.py sft → merge → run_train.py dpo → merge
+    → serve v125 + serve challenger → gate.py
 ```
 
 ## Layout
@@ -39,5 +53,6 @@ albedo-training/
   01-the-map.md … 07-gpu-dataset.md
   cut_prefixes.py  roll_king.py  filter_rollouts.py
   pack_pairs.py    train.py      gate.py
+  run_train.py     # real SFT / DPO / merge
   notes/
 ```

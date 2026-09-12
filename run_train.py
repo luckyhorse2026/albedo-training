@@ -206,10 +206,36 @@ def run_sft(args: argparse.Namespace) -> None:
     tokenizer.save_pretrained(args.out_dir)
 
 
+class SharedRefLogpsDPOTrainer:
+    """TRL writes precomputed ref log-probs next to the Dataset cache.
+
+    `Dataset.from_list` uses a unique `/tmp/hf_datasets-*` dir per rank, so
+    rank 0's arrow file is invisible to the others. Pin the cache under
+    output_dir so every rank reads the same path.
+    """
+
+    def _precompute_ref_logps(self, dataset, name: str, batch_size: int):
+        import os
+
+        cache_dir = os.path.join(os.path.abspath(self.args.output_dir), "_ref_logps")
+        os.makedirs(cache_dir, exist_ok=True)
+        orig = dataset._get_cache_file_path
+        dataset._get_cache_file_path = lambda fingerprint: os.path.join(
+            cache_dir, f"{name}-{fingerprint}.arrow"
+        )
+        try:
+            return super()._precompute_ref_logps(dataset, name, batch_size)
+        finally:
+            dataset._get_cache_file_path = orig
+
+
 def run_dpo(args: argparse.Namespace) -> None:
     import os
 
     from trl import DPOConfig, DPOTrainer
+
+    class _DPOTrainer(SharedRefLogpsDPOTrainer, DPOTrainer):
+        pass
 
     # DPO does chosen+rejected (+ ref). 8k OOM'd a 140GB H200 after SFT-sized weights.
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -256,7 +282,7 @@ def run_dpo(args: argparse.Namespace) -> None:
         precompute_ref_log_probs=True,
         precompute_ref_batch_size=1,
     )
-    trainer = DPOTrainer(
+    trainer = _DPOTrainer(
         model=model,
         ref_model=None,
         args=cfg,

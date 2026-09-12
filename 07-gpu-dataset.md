@@ -14,7 +14,7 @@ prefix (public parquet, cut like eval)
                     → gate on held-out prefixes
 ```
 
-`train.py --run` and `gate.py --run` are still refused in this repo. After the jsonl files exist, train with your own TRL / axolotl command using `out/train/recipe.json`.
+`train.py --run` and `gate.py --run` are still refused. After the jsonl files exist, train with `run_train.py` (commands in §7). `train.py` only writes `out/train/recipe.json`.
 
 ---
 
@@ -49,6 +49,35 @@ uv run python pack_pairs.py --self-test
 All four must print `PASS`. If not, stop.
 
 `data/` and `out/` are gitignored. They stay on the box.
+
+### This box (2026-09-12)
+
+First full pass on 4× H200. Numbers to match if you rerun:
+
+| artifact | n |
+|---|---|
+| `out/all-prefixes.jsonl` | 327 (wanted 340, short) |
+| train / held-out | 287 / 40 |
+| `out/rollouts.jsonl` | 1722 (287 × 6) |
+| keep / drop | 383 / 1339 (`no_source_edit` 883, `bad_turn` 605) |
+| tickets with both keep+drop | 142 (bar was ≥150) |
+| `out/sft.jsonl` / `out/dpo.jsonl` | 383 / 259 |
+
+SFT LoRA finished. DPO at `--max-seq-len 8192` OOM’d (~130 GB used, tried +15 GB). `--max-seq-len 4096` plus `precompute_ref_log_probs` fits (~77 GB). TRL’s default ref-logps cache is a per-rank `/tmp/hf_datasets-*` file — ranks 1–3 then `FileNotFoundError`. `run_train.py` pins that cache under `out/train/dpo-adapter/_ref_logps`.
+
+DPO then finished: 43 steps, ~3.7 min, `train_loss` 2.247, `rewards/accuracies` 0.58. Merged to `out/train/challenger`.
+
+Held-out ×2 (80 rolls each). **vLLM is dead after train — serve again before you roll** (the “already up” comment below is a lie if you just finished §7).
+
+| meter | v125 | challenger |
+|---|---|---|
+| n | 80 cold | 80 cold |
+| cold_verify_rate | 0.650 | 0.675 |
+| cold_edit_rate | 0.388 | 0.400 |
+| pre_edit_* | — | no pre_edit prefixes in this 40 |
+| loop_rate | 0 | 0 |
+
+Verify up, cold edits did not drop. Delta is small (~2 extra verifies). Scores: `out/gate-v125.json`, `out/gate-chal.json`.
 
 ---
 
@@ -385,12 +414,28 @@ Merge LoRA before any upload. The subnet rejects `adapter_config`.
 
 Roll **held-out** prefixes × 2 with **raw v125** and with **your merge**. Same filter, no GLM.
 
-Training done → kill it → serve **four replicas again** (same loop as §1, swap the weights).
+Training done → kill train leftovers → serve **four replicas again** (same flags as §1). Do not roll until `/v1/models` answers. Connection refused = empty jsonl = a null `gate.json`.
 
 Baseline (raw v125), then your merge as `challenger`. One after the other. All 4 GPUs both times.
 
 ```bash
-# baseline — 4 replicas of v125 already up
+# serve v125 again (copy of §1). Wait until all four /v1/models are up.
+export VLLM_USE_FLASHINFER_SAMPLER=0
+for i in 0 1 2 3; do
+  CUDA_VISIBLE_DEVICES=$i /opt/vllm/bin/vllm serve /data/kings/v125 \
+    --served-model-name v125 --host 127.0.0.1 --port $((8000 + i)) \
+    --tensor-parallel-size 1 --gpu-memory-utilization 0.90 \
+    --kv-cache-dtype auto --max-num-seqs 256 --trust-remote-code \
+    --generation-config vllm --enable-prefix-caching \
+    --limit-mm-per-prompt '{"image": 0, "video": 0}' \
+    --max-model-len 32768 --gdn-prefill-backend triton \
+    > /tmp/vllm-$i.log 2>&1 &
+done
+for i in 0 1 2 3; do
+  until curl -sf http://127.0.0.1:$((8000 + i))/v1/models >/dev/null; do sleep 2; done
+  echo "gpu $i up on $((8000 + i))"
+done
+
 for i in 0 1 2 3; do
   uv run python roll_king.py --prefixes out/heldout.jsonl --n 2 \
     --backend openai --base-url http://127.0.0.1:$((8000 + i))/v1 --model v125 \
@@ -400,8 +445,23 @@ wait
 cat out/heldout-v125.{0,1,2,3}.jsonl > out/heldout-v125.jsonl
 
 kill $(ps -eo pid,cmd | awk '/\/vllm serve/ && !/awk/ {print $1}') 2>/dev/null || true
-# start 4 replicas of the merge on ports 8000-8003 (same serve flags as §1,
-# swap weights + --served-model-name challenger)
+# wait until nvidia-smi memory is ~0, then serve the merge
+export VLLM_USE_FLASHINFER_SAMPLER=0
+for i in 0 1 2 3; do
+  CUDA_VISIBLE_DEVICES=$i /opt/vllm/bin/vllm serve out/train/challenger \
+    --served-model-name challenger --host 127.0.0.1 --port $((8000 + i)) \
+    --tensor-parallel-size 1 --gpu-memory-utilization 0.90 \
+    --kv-cache-dtype auto --max-num-seqs 256 --trust-remote-code \
+    --generation-config vllm --enable-prefix-caching \
+    --limit-mm-per-prompt '{"image": 0, "video": 0}' \
+    --max-model-len 32768 --gdn-prefill-backend triton \
+    > /tmp/vllm-chal-$i.log 2>&1 &
+done
+for i in 0 1 2 3; do
+  until curl -sf http://127.0.0.1:$((8000 + i))/v1/models >/dev/null; do sleep 2; done
+  echo "challenger gpu $i up on $((8000 + i))"
+done
+
 for i in 0 1 2 3; do
   uv run python roll_king.py --prefixes out/heldout.jsonl --n 2 \
     --backend openai --base-url http://127.0.0.1:$((8000 + i))/v1 --model challenger \
@@ -411,7 +471,9 @@ wait
 cat out/heldout-chal.{0,1,2,3}.jsonl > out/heldout-chal.jsonl
 
 uv run python gate.py --rollouts out/heldout-v125.jsonl
+cp out/gate.json out/gate-v125.json
 uv run python gate.py --rollouts out/heldout-chal.jsonl
+cp out/gate.json out/gate-chal.json
 ```
 
 | meter | vs raw v125 |
@@ -425,6 +487,37 @@ uv run python gate.py --rollouts out/heldout-chal.jsonl
 If verify is up and cold edits held, this pack can beat v125 the same way v125 beat v124.
 
 `gate.py --run` is refused. The command above scores files you already rolled.
+
+---
+
+## 9. Hugging Face pack (not uploaded yet)
+
+`run_train.py merge` rewrites `config.json` / tokenizer and drops the two preprocessor files. SN97 hashes those against genesis / the sitting king. Copy metadata from v125, keep only the trained shards:
+
+```bash
+SRC=out/train/challenger
+KING=/data/kings/v125
+DST=out/train/challenger-hf
+mkdir -p "$DST"
+for f in config.json generation_config.json tokenizer_config.json tokenizer.json \
+         chat_template.jinja preprocessor_config.json video_preprocessor_config.json; do
+  cp -a "$KING/$f" "$DST/$f"
+done
+ln "$SRC"/model-00001-of-00002.safetensors "$DST"/
+ln "$SRC"/model-00002-of-00002.safetensors "$DST"/
+cp -a "$SRC"/model.safetensors.index.json "$DST"/
+# no adapter_config. README.md is allowed.
+```
+
+Repo name if you commit on-chain: `<namespace>/albedo-qwen3.6-35b-<suffix>` (lowercase namespace). Needs `HF_TOKEN` with write. This box is not logged in (`hf auth whoami`).
+
+```bash
+hf auth login --token "$HF_TOKEN"
+hf repo create "$NS/albedo-qwen3.6-35b-chal-v1" --type model
+hf upload "$NS/albedo-qwen3.6-35b-chal-v1" out/train/challenger-hf
+```
+
+`albedo publish` (wallet + on-chain reveal) is a later step in `../albedo`.
 
 ---
 
