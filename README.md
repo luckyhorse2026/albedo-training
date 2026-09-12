@@ -5,7 +5,8 @@ Scripts for beating the sitting king on SN97.
 **Sitting king = v125** ([CXXV](https://huggingface.co/dendriteholdings/albedo-qwen3.6-35b-king-CXXV)).
 Train from that, not v124.
 
-On a GPU box, start here: **[`07-gpu-dataset.md`](07-gpu-dataset.md)**.
+On a 4×H200 box, start here: **[`07-gpu-dataset.md`](07-gpu-dataset.md)**.
+Each model step uses all 4 GPUs (4 vLLM replicas, or `torchrun` DDP). No TP=4. No leftover idle cards.
 
 This folder prepares the pipeline. `data/` and `out/` are gitignored. `--run` on `train.py` / `gate.py` is refused.
 

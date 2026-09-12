@@ -135,6 +135,17 @@ def roll_one(
     }
 
 
+def _parse_shard(spec: str) -> tuple[int, int]:
+    left, _, right = spec.partition("/")
+    try:
+        shard_i, shard_n = int(left), int(right)
+    except ValueError as exc:
+        raise SystemExit(f"bad --shard {spec!r}, want i/n") from exc
+    if shard_n < 1 or not (0 <= shard_i < shard_n):
+        raise SystemExit(f"bad --shard {spec!r}, want i/n with 0 <= i < n")
+    return shard_i, shard_n
+
+
 def load_prefixes(path: Path) -> list[dict[str, Any]]:
     rows = []
     for line in path.read_text().splitlines():
@@ -172,6 +183,11 @@ def main() -> int:
     parser.add_argument("--base-url", default=os.environ.get("KING_BASE_URL", "http://127.0.0.1:8000/v1"))
     parser.add_argument("--model", default=os.environ.get("KING_MODEL", "v125"))
     parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument(
+        "--shard",
+        default="0/1",
+        help="i/n: this process takes prefixes where index %% n == i (4 GPUs: 0/4 … 3/4)",
+    )
     args = parser.parse_args()
 
     if args.self_test:
@@ -181,6 +197,8 @@ def main() -> int:
         return 2
 
     prefixes = load_prefixes(args.prefixes)
+    shard_i, shard_n = _parse_shard(args.shard)
+    prefixes = [p for i, p in enumerate(prefixes) if i % shard_n == shard_i]
     if args.backend == "fake":
         # even slots verify, odd slots skip — so you always have a pair for step 04
         def king_for(r: int) -> KingFn:

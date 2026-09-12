@@ -1,6 +1,7 @@
 from cut_prefixes import demo_prefix
 from format_turn import first_bash, is_submit
 from roll_king import (
+    _parse_shard,
     fake_king_skip_verify,
     fake_king_verify,
     roll_one,
@@ -36,3 +37,8 @@ def test_skip_path_never_checks():
     assert any("sed -i" in c for c in rec["commands"])
     assert not any("python -c" in c for c in rec["commands"])
     assert first_bash(rec["continuation"][0]["content"])
+
+
+def test_parse_shard():
+    assert _parse_shard("0/4") == (0, 4)
+    assert _parse_shard("3/4") == (3, 4)

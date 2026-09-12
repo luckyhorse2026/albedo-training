@@ -18,11 +18,21 @@ prefix (public parquet, cut like eval)
 
 ---
 
-## 0. Box
+## 0. Box (4× H200, one step at a time, all four GPUs)
 
-- One 80GB GPU is enough (H100 / A100). You serve **one** king, then QLoRA.
-- Do **not** rent the 8-GPU eval topology to build data.
-- CPython 3.12, this repo, `uv`.
+Do **not** leave GPUs idle on model steps. Do **not** overlap serve and train. Kill the previous job before the next step.
+
+Do **not** use eval’s 8-GPU split (4+4, TP=4). Do **not** run one vLLM with `--tensor-parallel-size 4`. The king is 72GB and already fits on one H200. TP=4 only adds all-reduce. **Four full copies** is how you use all four cards.
+
+| step | GPUs | how all 4 stay busy |
+|---|---|---|
+| 0 self-test / 2 download / 3 cut / 5 filter / 6 pack | **none** | CPU. Stop vLLM first so the next model step can take every card. |
+| 1 download weights | none | disk |
+| 4 roll v125 ×6 | **4** | 4 vLLM replicas (one per GPU), 4 `roll_king.py --shard i/4` |
+| 7 SFT then DPO | **4** | `torchrun --nproc_per_node=4` DDP. Each GPU holds a full BF16 king + LoRA. |
+| 8 gate | **4** | same as step 4: 4 replicas, 4 shards. Baseline first, then challenger. |
+
+CPython 3.12, this repo, `uv`.
 
 ```bash
 git clone https://github.com/luckyhorse2026/albedo-training.git
@@ -51,21 +61,29 @@ huggingface-cli download dendriteholdings/albedo-qwen3.6-35b-king-CXXV \
   --local-dir /data/kings/v125
 ```
 
-Serve it (adjust flags to your vLLM version). One process. Name it `v125`.
+Serve **four replicas**, one GPU each. Same weights, four ports. Name them `v125`.
 
 ```bash
-vllm serve /data/kings/v125 \
-  --served-model-name v125 \
-  --enable-prefix-caching \
-  --gpu-memory-utilization 0.90 \
-  --max-model-len 32768
+# stop anything leftover
+pkill -f 'vllm serve' || true
+
+for i in 0 1 2 3; do
+  CUDA_VISIBLE_DEVICES=$i vllm serve /data/kings/v125 \
+    --served-model-name v125 \
+    --port $((8000 + i)) \
+    --enable-prefix-caching \
+    --gpu-memory-utilization 0.90 \
+    --max-model-len 32768 \
+    > /tmp/vllm-$i.log 2>&1 &
+done
+
+for i in 0 1 2 3; do
+  until curl -sf http://127.0.0.1:$((8000 + i))/v1/models >/dev/null; do sleep 2; done
+  echo "gpu $i up on $((8000 + i))"
+done
 ```
 
-Smoke:
-
-```bash
-curl -s http://127.0.0.1:8000/v1/models
-```
+`nvidia-smi` should show ~72GB+ on **every** card. If one card is 0, that replica died — read `/tmp/vllm-$i.log`.
 
 Eval uses temp **1.0**, top_p **0.95**, thinking on. Rollouts must look like the king, so keep temp at 1.0. You need **both** a keep and a drop on many tickets; low temp collapses to one day.
 
@@ -166,18 +184,29 @@ Check a few lines:
 
 Observations are still a **stub** (`(stub) ran: …`). That is enough for a first pack: the judge mostly looks at whether the **command** happened. Real docker/repo grounding is an upgrade if the gate does not move.
 
+Four roller processes, one per replica. Each takes every 4th prefix.
+
 ```bash
-uv run python roll_king.py \
-  --prefixes out/prefixes.jsonl \
-  --n 6 \
-  --backend openai \
-  --base-url http://127.0.0.1:8000/v1 \
-  --model v125 \
-  --temperature 1.0 \
-  --out out/rollouts.jsonl
+mkdir -p out
+for i in 0 1 2 3; do
+  uv run python roll_king.py \
+    --prefixes out/prefixes.jsonl \
+    --n 6 \
+    --backend openai \
+    --base-url http://127.0.0.1:$((8000 + i))/v1 \
+    --model v125 \
+    --temperature 1.0 \
+    --shard $i/4 \
+    --out out/rollouts.$i.jsonl &
+done
+wait
+cat out/rollouts.{0,1,2,3}.jsonl > out/rollouts.jsonl
+wc -l out/rollouts.jsonl
 ```
 
 ~300 prefixes × 6 ≈ 1800 lines. `--backend fake` is only for learning the file shape. It is not v125.
+
+When this step is done: **`pkill -f 'vllm serve'`** before you train. Training needs all four cards.
 
 If the server dies mid-way, do not mix two jsonl files with overlapping `sample_id` unless you know what you are doing. Restart clean or concatenate only complete prefixes.
 
@@ -246,7 +275,31 @@ Reads `out/train/recipe.json`. It does not train.
 
 ---
 
-## 7. Train (your trainer, on this box)
+## 7. Train (your trainer, all 4 GPUs, this step only)
+
+vLLM must be dead. `nvidia-smi` empty. Then DDP — **four full copies**, not FSDP/ZeRO-3 unless one GPU OOMs (it should not on H200).
+
+```bash
+# example shape — plug into TRL / your trainer. train.py --run is refused.
+torchrun --nproc_per_node=4 --standalone your_sft.py \
+  --base /data/kings/v125 \
+  --data out/sft.jsonl \
+  --lora-targets attn,shared_expert \
+  --lr 5e-6 --epochs 1 \
+  --per_device_train_batch_size 1 \
+  --gradient_checkpointing \
+  --bf16
+
+torchrun --nproc_per_node=4 --standalone your_dpo.py \
+  --base out/train/sft-merged \
+  --data out/dpo.jsonl \
+  --beta 0.2 --lr 5e-6 --epochs 1 \
+  --per_device_train_batch_size 1 \
+  --gradient_checkpointing \
+  --bf16
+```
+
+Effective batch = 4. That is how the four cards earn their keep on this step. Do not start a fifth vLLM “to watch”.
 
 Recipe we want (same class as v125←v124):
 
@@ -270,16 +323,29 @@ Merge LoRA before any upload. The subnet rejects `adapter_config`.
 
 Roll **held-out** prefixes × 2 with **raw v125** and with **your merge**. Same filter, no GLM.
 
-```bash
-# baseline
-uv run python roll_king.py --prefixes out/heldout.jsonl --n 2 \
-  --backend openai --base-url http://127.0.0.1:8000/v1 --model v125 \
-  --temperature 1.0 --out out/heldout-v125.jsonl
+Training done → kill it → serve **four replicas again** (same loop as §1, swap the weights).
 
-# after you serve the merge as `challenger`
-uv run python roll_king.py --prefixes out/heldout.jsonl --n 2 \
-  --backend openai --base-url http://127.0.0.1:8000/v1 --model challenger \
-  --temperature 1.0 --out out/heldout-chal.jsonl
+Baseline (raw v125), then your merge as `challenger`. One after the other. All 4 GPUs both times.
+
+```bash
+# baseline — 4 replicas of v125 already up
+for i in 0 1 2 3; do
+  uv run python roll_king.py --prefixes out/heldout.jsonl --n 2 \
+    --backend openai --base-url http://127.0.0.1:$((8000 + i))/v1 --model v125 \
+    --temperature 1.0 --shard $i/4 --out out/heldout-v125.$i.jsonl &
+done
+wait
+cat out/heldout-v125.{0,1,2,3}.jsonl > out/heldout-v125.jsonl
+
+pkill -f 'vllm serve' || true
+# start 4 replicas of the merge on ports 8000-8003, --served-model-name challenger
+for i in 0 1 2 3; do
+  uv run python roll_king.py --prefixes out/heldout.jsonl --n 2 \
+    --backend openai --base-url http://127.0.0.1:$((8000 + i))/v1 --model challenger \
+    --temperature 1.0 --shard $i/4 --out out/heldout-chal.$i.jsonl &
+done
+wait
+cat out/heldout-chal.{0,1,2,3}.jsonl > out/heldout-chal.jsonl
 
 uv run python gate.py --rollouts out/heldout-v125.jsonl
 uv run python gate.py --rollouts out/heldout-chal.jsonl
@@ -301,6 +367,8 @@ If verify is up and cold edits held, this pack can beat v125 the same way v125 b
 
 ## Do not
 
+- One vLLM with `--tensor-parallel-size 4`. That is not “using 4 GPUs”; it is a slower single replica.
+- Serve and train at the same time. Each model step owns all four cards.
 - Serve or train **v124**. Wrong king.
 - SFT parquet gold completions or GLM dumps.
 - Mix v124 rollouts with v125 rollouts.
