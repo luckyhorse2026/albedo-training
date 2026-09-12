@@ -18,7 +18,7 @@ Script: `roll_king.py`
 ```
 
 Eval does this **twice** per ticket and averages the two scores.
-We will do it **four** times per ticket so step 04 can pick a good one and a bad sibling.
+We will do it **six** times per ticket so step 04 can pick a good one and a bad sibling.
 
 Same ticket, four tries, different temperatures later. Today the fake backend just plays two scripts:
 
@@ -27,7 +27,7 @@ Same ticket, four tries, different temperatures later. Today the fake backend ju
 | odd (1, 3) | edit, then `python -c` check, then submit | keep |
 | even (2, 4) | edit, then `grep` forever | drop |
 
-That pair is the whole training idea: v124’s good day vs v124’s leak.
+That pair is the whole training idea: v125’s good day vs v125’s leak.
 
 ---
 
@@ -36,7 +36,7 @@ That pair is the whole training idea: v124’s good day vs v124’s leak.
 - It does not score tags.
 - It does not talk to GLM.
 - It does not run commands in a real repo. Observations are a **stub** (`(stub) ran: …` in RETURNCODE wrappers). Real grounding comes later if we need it.
-- It does not start v124. `--backend fake` is for learning the file shape. `--backend openai` is for when you serve the king with vLLM.
+- It does not start v125. `--backend fake` is for learning the file shape. `--backend openai` is for when you serve the king with vLLM.
 
 ---
 
@@ -55,11 +55,11 @@ When you have real prefixes:
 uv run python roll_king.py --prefixes out/prefixes.jsonl --n 4 --backend fake --out out/rollouts.jsonl
 ```
 
-When v124 is on a vLLM server:
+When v125 is on a vLLM server (see `07-gpu-dataset.md`):
 
 ```bash
-uv run python roll_king.py --prefixes out/prefixes.jsonl --backend openai \
-  --base-url http://127.0.0.1:8000/v1 --model v124 --out out/rollouts.jsonl
+uv run python roll_king.py --prefixes out/prefixes.jsonl --n 6 --backend openai \
+  --base-url http://127.0.0.1:8000/v1 --model v125 --temperature 1.0 --out out/rollouts.jsonl
 ```
 
 Each jsonl line is one rollout: `commands`, `continuation`, `stopped` (`horizon` / `submit` / `bad_turn:…`).

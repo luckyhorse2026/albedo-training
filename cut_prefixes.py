@@ -56,14 +56,14 @@ _LEAKS = {
 SOURCES = ("mini-coder", "open-swe-traces", "swe-hero", "mini-coder-rs")
 MAX_PREFIX_CHARS = 54_000
 
-# Our overfit mix (not the eval 65/15/20). Eval shares stay in --pack eval.
-OVERFIT_PHASE = [("cold", 45), ("pre_edit", 25), ("at_edit", 10)]
-# leftover 20% is filled by source targets below (hero + rust), still with a phase.
+# v125 leftover: verify + action still ~0.5. Stay close to live draw, nudge near-edit.
+# See 07-gpu-dataset.md. Eval shares stay in --pack eval.
+OVERFIT_PHASE = [("cold", 55), ("pre_edit", 25), ("at_edit", 20)]
 OVERFIT_SOURCE = [
-    ("mini-coder", 65),
-    ("open-swe-traces", 15),
-    ("swe-hero", 12),
-    ("mini-coder-rs", 8),
+    ("mini-coder", 57),
+    ("open-swe-traces", 37),
+    ("swe-hero", 4),
+    ("mini-coder-rs", 2),
 ]
 EVAL_PHASE = [("cold", 65), ("pre_edit", 15), ("at_edit", 20)]
 
@@ -263,9 +263,8 @@ def pick_entries(
         else _apportion(OVERFIT_SOURCE, count)
     )
     phase_want = _apportion(phase_spec, count)
-    if pack == "overfit":
-        # remaining 20% of overfit phase spec (45+25+10) — put on cold
-        leftover = count - sum(phase_want.values())
+    leftover = count - sum(phase_want.values())
+    if leftover:
         phase_want["cold"] = phase_want.get("cold", 0) + leftover
 
     selected: list[dict[str, Any]] = []

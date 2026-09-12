@@ -35,6 +35,11 @@ _WIDE_SEARCH_RE = re.compile(
     r"^\s*(find\s+\.|find\s+/\s|grep\s+-[a-zA-Z]*r[a-zA-Z]*\s|rg\s+.*\s+\.|grep\s+-rn\s)",
     re.I,
 )
+_INFRA_RE = re.compile(
+    r"\b(pip3?\s+install\b[^\n]*\bpytest\b|python3?\s+-m\s+pip\s+install[^\n]*\bpytest\b|"
+    r"which\s+pytest|find\s+/\s+-name\s+[\"']pytest[\"'])",
+    re.I,
+)
 
 
 def _asst_cmds(messages: list[dict[str, str]]) -> list[str]:
@@ -106,6 +111,15 @@ def judge(rollout: dict[str, Any]) -> dict[str, Any]:
 
     if phase == "pre_edit" and cont_cmds and _WIDE_SEARCH_RE.search(cont_cmds[0]):
         reasons.append("restart_wide_search")
+
+    if phase in {"pre_edit", "at_edit"}:
+        n_wide = sum(1 for c in cont_cmds if _WIDE_SEARCH_RE.search(c))
+        if n_wide >= 3:
+            reasons.append("search_spam")
+
+    n_infra = sum(1 for c in cont_cmds if _INFRA_RE.search(c))
+    if n_infra >= 2:
+        reasons.append("infra_thrash")
 
     if cont_edits:
         last_edit = cont_edits[-1]

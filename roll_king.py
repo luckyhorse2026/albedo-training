@@ -5,7 +5,7 @@ A rollout is: prefix + (assistant turn, observation) repeated until horizon or s
 
 Backends:
   fake     — scripted king, so you can see the file shape with no GPU
-  openai   — any OpenAI-compatible server (vLLM serving v124 later)
+  openai   — any OpenAI-compatible server (vLLM serving v125)
 """
 
 from __future__ import annotations
@@ -170,8 +170,8 @@ def main() -> int:
     parser.add_argument("--n", type=int, default=4, help="rollouts per prefix")
     parser.add_argument("--backend", choices=("fake", "openai"), default="fake")
     parser.add_argument("--base-url", default=os.environ.get("KING_BASE_URL", "http://127.0.0.1:8000/v1"))
-    parser.add_argument("--model", default=os.environ.get("KING_MODEL", "v124"))
-    parser.add_argument("--temperature", type=float, default=0.8)
+    parser.add_argument("--model", default=os.environ.get("KING_MODEL", "v125"))
+    parser.add_argument("--temperature", type=float, default=1.0)
     args = parser.parse_args()
 
     if args.self_test:

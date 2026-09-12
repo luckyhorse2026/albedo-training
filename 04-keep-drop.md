@@ -32,7 +32,9 @@ A keep must pass **all** that apply.
 | `edit_before_repro` | on cold, first edit happened before any failing-test / `python -c` |
 | `submit_without_verify` | submitted after an edit with no check |
 
-These are **our** rules, not GLM. They target v124’s leak: edit, then no taste.
+These are **our** rules, not GLM. They target the leftover leak: edit, then no taste; or restart-search / pytest-install loops.
+
+Also dropped: `search_spam` (≥3 repo-wide searches on pre_edit/at_edit) and `infra_thrash` (`pip install pytest` / `which pytest` twice).
 
 `at_edit` prefixes already contain the first edit. Then we only require a verify in the continuation.
 

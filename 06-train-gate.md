@@ -1,6 +1,6 @@
 # 06 — Train + gate (scripts only)
 
-This folder **prepares** the train and the local gate. It does not download data, serve v124, or run LoRA.
+This folder **prepares** the train and the local gate. It does not download data, serve v125, or run LoRA. GPU steps: `07-gpu-dataset.md`.
 
 ---
 
@@ -8,7 +8,7 @@ This folder **prepares** the train and the local gate. It does not download data
 
 Writes `out/train/recipe.json` and prints the commands a GPU box would run.
 
-- Base = v124
+- Base = v125
 - SFT on `sft.jsonl` (loss only after `n_prefix`)
 - DPO on `dpo.jsonl` (keep vs drop, same ticket)
 - LoRA on attn + shared expert, LR `5e-6`, 1 epoch, DPO β `0.2`
@@ -32,11 +32,11 @@ Defines the meters. After a real train, someone would roll held-out prefixes × 
 
 ---
 
-## Pipeline we prepared (not executed)
+## Pipeline we prepared (execute on GPU via 07)
 
 ```
 cut_prefixes.py     pause tickets
-roll_king.py        4 continuations (needs v124 + env on a GPU box)
+roll_king.py        6 continuations (needs v125 on a GPU box)
 filter_rollouts.py  keep / drop
 pack_pairs.py       sft.jsonl + dpo.jsonl
 train.py            recipe only

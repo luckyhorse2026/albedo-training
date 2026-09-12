@@ -59,4 +59,4 @@ uv run python pack_pairs.py --keep out/keep.jsonl --drop out/drop.jsonl --out-di
 2. `n_prefix` exists so we do not train on the paused part.
 3. We still have not run LoRA / TRL.
 
-Next (06): a real train command + a tiny local gate. Not yet. We do not have v124 on GPU in this step.
+Next (06): a real train command + a tiny local gate. GPU execution is `07-gpu-dataset.md`.

@@ -66,7 +66,7 @@ When you have data:
 uv run python cut_prefixes.py --pack overfit --count 200 --out out/prefixes.jsonl
 ```
 
-`--pack overfit` uses **our** mix (more pre_edit, some SWE-hero/Rust), not eval’s 65/15/20.
+`--pack overfit` uses the v125 mix (55/25/20 cold/pre_edit/at_edit; mostly mini-coder + open-swe). See `07-gpu-dataset.md`.
 `--pack eval` copies the eval mix if you want to compare.
 
 Each jsonl line is one paused ticket: `messages` plus `phase_wanted`, `source`, `family`, `horizon` (12 or 16).
@@ -81,4 +81,4 @@ After self-test, you should be able to say:
 2. `at_edit` still **contains** the first `sed -i`. `pre_edit` does not.
 3. We have **not** trained anything. We only cut.
 
-Next step (03) will be: take these prefixes and run **v124** on them. Not yet.
+Next step (03) will be: take these prefixes and run **v125** on them. Not yet.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write the train recipe. Does not train unless you pass --run (not used here).
 
-SFT then DPO on v124. Small LR. Loss only after n_prefix.
+SFT then DPO on v125. Small LR. Loss only after n_prefix.
 """
 
 from __future__ import annotations
@@ -55,14 +55,14 @@ def commands(r: dict) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--king", default="", help="path to v124 weights (required for --run)")
+    parser.add_argument("--king", default="", help="path to v125 weights (required for --run)")
     parser.add_argument("--sft", default="out/sft.jsonl")
     parser.add_argument("--dpo", default="out/dpo.jsonl")
     parser.add_argument("--out-dir", default="out/train")
     parser.add_argument("--run", action="store_true", help="actually train — do not use in this repo")
     args = parser.parse_args()
 
-    r = recipe(king_path=args.king or "<v124-repo>", sft_path=args.sft, dpo_path=args.dpo, out_dir=args.out_dir)
+    r = recipe(king_path=args.king or "<v125-repo>", sft_path=args.sft, dpo_path=args.dpo, out_dir=args.out_dir)
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     path = out / "recipe.json"

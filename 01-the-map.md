@@ -23,7 +23,7 @@ So “I scored 0.71 last time” is useless. The only useful sentence is:
 
 That is all “no score to beat” meant. Sorry — that phrase was bad.
 
-Our starting weights: **king v124** (you have the repo). Not genesis. Not another miner’s model.
+Our starting weights: **king v125** ([CXXV](https://huggingface.co/dendriteholdings/albedo-qwen3.6-35b-king-CXXV)). Not v124. Not genesis.
 
 ---
 
@@ -85,7 +85,7 @@ Most questions are **explore** (lots of “did you read X”). We still do **not
 
 Most fights start at `cold` (ticket just arrived).
 
-On that slice, v124’s **main leak is verification**.
+On that slice, the king’s **main leftover leak is still verification** (v125 ~0.45 yes-rate).
 
 In one line: **the king changes the code and does not re-run the check.**
 
@@ -93,23 +93,23 @@ Challengers who almost beat him did the extra taste. That is the first habit we 
 
 ---
 
-## 4. Why the answers come from v124, not from GLM
+## 4. Why the answers come from v125, not from GLM
 
 Two different things go into a training row:
 
 | piece | where it comes from | why |
 |---|---|---|
 | **prefix** (the paused ticket) | public datasets (mini-coder, SWE-hero, …) | same kind of pause the eval uses |
-| **continuation** (what to do next) | **v124, run several times** | same voice, same command style as the king we must beat |
+| **continuation** (what to do next) | **v125, run several times** | same voice, same command style as the king we must beat |
 | **keep or drop** | our rules (did he verify? did he restart grep?) | this is the “teacher”, not GLM |
 
 **GLM** is the strong model the *subnet* uses to write questions. If we SFT on GLM’s transcripts, we teach “move like GLM.” The questions are written so that **any correct route** can score. Copying GLM’s files and greps does not help, and can hurt.
 
-**v124** already knows how to edit. Sometimes he also verifies. Sometimes he doesn’t.
+**v125** already knows how to edit. Sometimes it also verifies. Sometimes it doesn’t.
 
-So we do this (later, not now):
+So we do this (see `07-gpu-dataset.md`):
 
-1. Give v124 the same paused ticket **4 times**.
+1. Give v125 the same paused ticket **6 times**.
 2. Keep the run where he **did** taste the soup after changing it.
 3. Train him to look like *that* run.
 4. Contrast it with his other run on the **same** ticket where he skipped the taste.
@@ -124,7 +124,9 @@ That is all “SFT from the king itself” means.
 
 While we teach “always taste after you change it,” we can accidentally teach “stop changing anything and only run tests.” That would lose.
 
-v124 is **already good** at:
+Do not break what the king already does:
+
+v125 is **already good enough** at:
 
 1. **`cold` + `action`** — from a fresh ticket he **edits** more than the people who almost beat him. Keep that.
 2. **`at_edit` + `verification`** — when the pause is already on the first edit, he already checks about as well as they do. Don’t overwrite that.
@@ -155,7 +157,7 @@ Answer these in your own words, short:
 
 **B.** Name the four tags in kitchen words, then say which one the king fails on a *fresh ticket*.
 
-**C.** In a training row, what comes from the public dataset, what comes from v124, and what decides keep vs drop?
+**C.** In a training row, what comes from the public dataset, what comes from v125, and what decides keep vs drop?
 
 **D.** What two skills of the king must stay as good as they are now?
 
