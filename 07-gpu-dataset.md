@@ -29,12 +29,17 @@ Cut / filter / pack are CPU — GPUs will be idle then. That is fine. Download i
 | roll ×6, gate | one vLLM per GPU (4 servers) + one roller per server |
 | SFT, DPO | `torchrun --nproc_per_node=4` |
 
-CPython 3.12, this repo, `uv`.
+CPython 3.12, this repo, `uv`. `huggingface-cli` is dead — use `hf`.
 
 ```bash
+# if `uv` is missing
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env
+
 git clone https://github.com/luckyhorse2026/albedo-training.git
 cd albedo-training
 uv sync --extra dev
+uv tool install huggingface_hub   # provides `hf`; do not use huggingface-cli
 uv run python cut_prefixes.py --self-test
 uv run python roll_king.py --self-test
 uv run python filter_rollouts.py --self-test
@@ -54,23 +59,45 @@ Public mirror:
 - https://huggingface.co/dendriteholdings/albedo-qwen3.6-35b-king-CXXV
 
 ```bash
-huggingface-cli download dendriteholdings/albedo-qwen3.6-35b-king-CXXV \
+mkdir -p /data/kings
+hf download dendriteholdings/albedo-qwen3.6-35b-king-CXXV \
   --local-dir /data/kings/v125
 ```
 
-Serve **four replicas**, one GPU each. Same weights, four ports. Name them `v125`.
+Install vLLM the way albedo pins it (`vllm==0.23.0`, `transformers==5.11.0`). The training venv does not include it.
 
 ```bash
-# stop anything leftover
-pkill -f 'vllm serve' || true
+uv venv /opt/vllm --python 3.12
+uv pip install --python /opt/vllm/bin/python 'vllm==0.23.0'
+uv pip install --python /opt/vllm/bin/python 'transformers==5.11.0'
+ln -sfn /opt/vllm/bin/vllm "$HOME/.local/bin/vllm"
+source $HOME/.local/bin/env
+```
 
+Serve **four replicas**, one GPU each. Same weights, four ports. Name them `v125`. Flags match albedo's `VllmServerGenerator` plus `--gdn-prefill-backend triton` so FlashInfer does not JIT-compile GDN kernels on first request (that path needs a matching `nvcc` and dies without it).
+
+Stop leftovers **first**, in a separate command. `pkill -f 'vllm serve'` will also kill a shell whose command line still contains `vllm serve`.
+
+```bash
+# stop leftovers — run this by itself, then the loop
+kill $(ps -eo pid,cmd | awk '/\/vllm serve/ && !/awk/ {print $1}') 2>/dev/null || true
+
+export VLLM_USE_FLASHINFER_SAMPLER=0
 for i in 0 1 2 3; do
-  CUDA_VISIBLE_DEVICES=$i vllm serve /data/kings/v125 \
+  CUDA_VISIBLE_DEVICES=$i /opt/vllm/bin/vllm serve /data/kings/v125 \
     --served-model-name v125 \
+    --host 127.0.0.1 \
     --port $((8000 + i)) \
-    --enable-prefix-caching \
+    --tensor-parallel-size 1 \
     --gpu-memory-utilization 0.90 \
+    --kv-cache-dtype auto \
+    --max-num-seqs 256 \
+    --trust-remote-code \
+    --generation-config vllm \
+    --enable-prefix-caching \
+    --limit-mm-per-prompt '{"image": 0, "video": 0}' \
     --max-model-len 32768 \
+    --gdn-prefill-backend triton \
     > /tmp/vllm-$i.log 2>&1 &
 done
 
@@ -80,7 +107,7 @@ for i in 0 1 2 3; do
 done
 ```
 
-`nvidia-smi` should show ~72GB+ on **every** card. If one card is 0, that replica died — read `/tmp/vllm-$i.log`.
+On 4× H200 this lands ~129GB per card. If one card is ~0, that replica died — read `/tmp/vllm-$i.log`. First boot can take a few minutes (compile cache). If one replica dies with a Triton `.so` race, restart **that** GPU only after another replica has compiled.
 
 Eval uses temp **1.0**, top_p **0.95**, thinking on. Rollouts must look like the king, so keep temp at 1.0. You need **both** a keep and a drop on many tickets; low temp collapses to one day.
 
@@ -105,26 +132,40 @@ data/<source>/data/train-*.parquet
 
 You do **not** need every mini-coder shard. A few early shards plus the other three repos is enough for 340 prefixes.
 
+These are **datasets**. `hf` defaults to models and 401s without `--repo-type dataset`. Use a real glob (`[0-5]`), not bash braces inside quotes.
+
 ```bash
-# examples — include paths depend on how the HF repo is laid out
-huggingface-cli download ricdomolm/mini-coder-trajs-400k \
-  --include "data/train-0000{0,1,2,3,4,5}-of-00060.parquet" \
+source $HOME/.local/bin/env   # so `hf` is the uv-tool one, not a leftover /opt/vllm/bin/hf
+
+hf download ricdomolm/mini-coder-trajs-400k \
+  --repo-type dataset \
+  --include "data/train-0000[0-5]-of-00060.parquet" \
   --local-dir data/mini-coder
 
-huggingface-cli download nvidia/Open-SWE-Traces \
-  --include "data/train-*.parquet" \
+# Open-SWE is nested: data/minisweagent/<agent>/<split>/train-*.parquet
+# `data/train-*.parquet` matches nothing. Pull a few qwen36 shards, then flatten.
+hf download nvidia/Open-SWE-Traces \
+  --repo-type dataset \
+  --include "data/minisweagent/qwen36_27b/scale-swe/train-0000[0-2]-of-00017.parquet" \
   --local-dir data/open-swe-traces
+mkdir -p data/open-swe-traces/data
+for f in data/open-swe-traces/data/minisweagent/qwen36_27b/scale-swe/train-*.parquet; do
+  ln -sfn "minisweagent/qwen36_27b/scale-swe/$(basename "$f")" \
+    "data/open-swe-traces/data/$(basename "$f")"
+done
 
-huggingface-cli download nvidia/SWE-Hero-openhands-trajectories \
+hf download nvidia/SWE-Hero-openhands-trajectories \
+  --repo-type dataset \
   --include "data/train-*.parquet" \
   --local-dir data/swe-hero
 
-huggingface-cli download AlienKevin/SWE-smith-rs-minimax-m2.5-trajectories \
+hf download AlienKevin/SWE-smith-rs-minimax-m2.5-trajectories \
+  --repo-type dataset \
   --include "data/train-*.parquet" \
   --local-dir data/mini-coder-rs
 ```
 
-If a repo uses a different prefix than `data/`, symlink so `data/<source>/data/train-*.parquet` exists.
+Cutter only sees `data/<source>/data/train-*.parquet`. If a repo uses another prefix, symlink like Open-SWE above.
 
 Do **not** SFT the assistant turns that are already in those parquets. They are another agent. Using them is how you get a different voice and a possible similarity hit.
 
@@ -203,7 +244,11 @@ wc -l out/rollouts.jsonl
 
 ~300 prefixes × 6 ≈ 1800 lines. `--backend fake` is only for learning the file shape. It is not v125.
 
-When this step is done: **`pkill -f 'vllm serve'`** before you train. Training needs all four cards.
+When this step is done, stop the replicas **before** you train (training needs all four cards):
+
+```bash
+kill $(ps -eo pid,cmd | awk '/\/vllm serve/ && !/awk/ {print $1}') 2>/dev/null || true
+```
 
 If the server dies mid-way, do not mix two jsonl files with overlapping `sample_id` unless you know what you are doing. Restart clean or concatenate only complete prefixes.
 
@@ -334,8 +379,9 @@ done
 wait
 cat out/heldout-v125.{0,1,2,3}.jsonl > out/heldout-v125.jsonl
 
-pkill -f 'vllm serve' || true
-# start 4 replicas of the merge on ports 8000-8003, --served-model-name challenger
+kill $(ps -eo pid,cmd | awk '/\/vllm serve/ && !/awk/ {print $1}') 2>/dev/null || true
+# start 4 replicas of the merge on ports 8000-8003 (same serve flags as §1,
+# swap weights + --served-model-name challenger)
 for i in 0 1 2 3; do
   uv run python roll_king.py --prefixes out/heldout.jsonl --n 2 \
     --backend openai --base-url http://127.0.0.1:$((8000 + i))/v1 --model challenger \
