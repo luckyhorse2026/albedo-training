@@ -317,28 +317,48 @@ Reads `out/train/recipe.json`. It does not train.
 
 ---
 
-## 7. Train (your trainer, all 4 GPUs, this step only)
+## 7. Train (all 4 GPUs, this step only)
 
-vLLM must be dead so training can use all 4. Then:
+`train.py` only writes `out/train/recipe.json`. `--run` is refused. The trainer is `run_train.py`.
+
+vLLM must be dead so training can use all 4. Install train libs into the same venv that already has torch + transformers 5.11:
 
 ```bash
-# example shape — plug into TRL / your trainer. train.py --run is refused.
-torchrun --nproc_per_node=4 --standalone your_sft.py \
+source $HOME/.local/bin/env
+uv pip install --python /opt/vllm/bin/python peft accelerate trl datasets
+```
+
+Then:
+
+```bash
+# SFT LoRA on v125 (attn + shared expert, loss after n_prefix)
+/opt/vllm/bin/torchrun --nproc_per_node=4 --standalone run_train.py sft \
   --base /data/kings/v125 \
   --data out/sft.jsonl \
-  --lora-targets attn,shared_expert \
+  --out-dir out/train/sft-adapter \
   --lr 5e-6 --epochs 1 \
-  --per_device_train_batch_size 1 \
-  --gradient_checkpointing \
-  --bf16
+  --per-device-train-batch-size 1
 
-torchrun --nproc_per_node=4 --standalone your_dpo.py \
+# merge SFT adapter into a full folder (subnet rejects adapter_config)
+/opt/vllm/bin/python run_train.py merge \
+  --base /data/kings/v125 \
+  --adapter out/train/sft-adapter \
+  --out-dir out/train/sft-merged
+
+# DPO LoRA on the SFT merge
+/opt/vllm/bin/torchrun --nproc_per_node=4 --standalone run_train.py dpo \
   --base out/train/sft-merged \
   --data out/dpo.jsonl \
+  --out-dir out/train/dpo-adapter \
   --beta 0.2 --lr 5e-6 --epochs 1 \
-  --per_device_train_batch_size 1 \
-  --gradient_checkpointing \
-  --bf16
+  --per-device-train-batch-size 1 \
+  --max-seq-len 4096
+
+# merge DPO adapter — this is the challenger weights
+/opt/vllm/bin/python run_train.py merge \
+  --base out/train/sft-merged \
+  --adapter out/train/dpo-adapter \
+  --out-dir out/train/challenger
 ```
 
 Effective batch = 4, all four cards working. Check `nvidia-smi`: none should be 0%.
