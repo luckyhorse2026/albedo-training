@@ -18,19 +18,16 @@ prefix (public parquet, cut like eval)
 
 ---
 
-## 0. Box (4× H200, one step at a time, all four GPUs)
+## 0. Box (4× H200)
 
-Do **not** leave GPUs idle on model steps. Do **not** overlap serve and train. Kill the previous job before the next step.
+Goal: **no idle GPU** on any step that loads the model. One step at a time. When a step finishes, stop it so the next step can take every card.
 
-Do **not** use eval’s 8-GPU split (4+4, TP=4). Do **not** run one vLLM with `--tensor-parallel-size 4`. The king is 72GB and already fits on one H200. TP=4 only adds all-reduce. **Four full copies** is how you use all four cards.
+Cut / filter / pack are CPU — GPUs will be idle then. That is fine. Download is disk.
 
-| step | GPUs | how all 4 stay busy |
-|---|---|---|
-| 0 self-test / 2 download / 3 cut / 5 filter / 6 pack | **none** | CPU. Stop vLLM first so the next model step can take every card. |
-| 1 download weights | none | disk |
-| 4 roll v125 ×6 | **4** | 4 vLLM replicas (one per GPU), 4 `roll_king.py --shard i/4` |
-| 7 SFT then DPO | **4** | `torchrun --nproc_per_node=4` DDP. Each GPU holds a full BF16 king + LoRA. |
-| 8 gate | **4** | same as step 4: 4 replicas, 4 shards. Baseline first, then challenger. |
+| step | keep all 4 busy |
+|---|---|
+| roll ×6, gate | one vLLM per GPU (4 servers) + one roller per server |
+| SFT, DPO | `torchrun --nproc_per_node=4` |
 
 CPython 3.12, this repo, `uv`.
 
@@ -277,7 +274,7 @@ Reads `out/train/recipe.json`. It does not train.
 
 ## 7. Train (your trainer, all 4 GPUs, this step only)
 
-vLLM must be dead. `nvidia-smi` empty. Then DDP — **four full copies**, not FSDP/ZeRO-3 unless one GPU OOMs (it should not on H200).
+vLLM must be dead so training can use all 4. Then:
 
 ```bash
 # example shape — plug into TRL / your trainer. train.py --run is refused.
@@ -299,7 +296,7 @@ torchrun --nproc_per_node=4 --standalone your_dpo.py \
   --bf16
 ```
 
-Effective batch = 4. That is how the four cards earn their keep on this step. Do not start a fifth vLLM “to watch”.
+Effective batch = 4, all four cards working. Check `nvidia-smi`: none should be 0%.
 
 Recipe we want (same class as v125←v124):
 
@@ -367,8 +364,7 @@ If verify is up and cold edits held, this pack can beat v125 the same way v125 b
 
 ## Do not
 
-- One vLLM with `--tensor-parallel-size 4`. That is not “using 4 GPUs”; it is a slower single replica.
-- Serve and train at the same time. Each model step owns all four cards.
+- Serve and train at the same time (they would steal cards from each other).
 - Serve or train **v124**. Wrong king.
 - SFT parquet gold completions or GLM dumps.
 - Mix v124 rollouts with v125 rollouts.
